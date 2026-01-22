@@ -4,6 +4,7 @@
 # 
 # Note: This implementation is adapted for pycolmap 3.13+ API
 
+import os
 import numpy as np
 import torch
 
@@ -448,7 +449,6 @@ def _save_images(images, output_path, reconstruction):
         output_path (str): Base output directory path
         reconstruction (pycolmap.Reconstruction): COLMAP reconstruction (used to get image names)
     """
-    import os
     try:
         import cv2
     except ImportError:
@@ -512,7 +512,6 @@ def save_colmap_reconstruction(reconstruction, output_path, images=None):
     if not PYCOLMAP_AVAILABLE:
         raise ImportError("pycolmap is required for COLMAP export. Install it with: pip install pycolmap")
     
-    import os
     os.makedirs(output_path, exist_ok=True)
     
     # Save the reconstruction data
