@@ -207,13 +207,16 @@ def pi3_to_colmap_simple(
     Simplified conversion from Pi3 output to COLMAP format without tracks.
     This is useful for visualization and initialization but should NOT be used for bundle adjustment.
     
-    Compatible with pycolmap 3.13+ API which uses frames and rigs.
+    Note: This function creates a frame-based reconstruction compatible with pycolmap 3.13+.
+    Camera poses are stored in frames and can be accessed via reconstruction.frames[frame_id].
+    Images are not separately persisted in this simplified format - use pi3_to_colmap() if you need
+    full image metadata with 2D-3D correspondences.
     
     Args:
         points3d (np.ndarray): 3D points, shape (P, 3) where P is number of points
-        camera_poses (np.ndarray): Camera-to-world matrices, shape (N, 4, 4)
+        camera_poses (np.ndarray): Camera-to-world matrices, shape (N, 4, 4) or (B, N, 4, 4)
         image_size (np.ndarray): Image size [width, height]
-        intrinsics (np.ndarray, optional): Camera intrinsics, shape (N, 3, 3)
+        intrinsics (np.ndarray, optional): Camera intrinsics, shape (N, 3, 3) or (B, N, 3, 3)
         points_rgb (np.ndarray, optional): RGB colors for points, shape (P, 3)
         shared_camera (bool): Whether all frames share the same camera
         camera_type (str): COLMAP camera model type
@@ -233,8 +236,9 @@ def pi3_to_colmap_simple(
         points_rgb = points_rgb.detach().cpu().numpy()
     
     # Handle batch dimension - camera_poses should be (N, 4, 4) or (B, N, 4, 4)
+    # ndim == 4 means (B, N, 4, 4), ndim == 3 means (N, 4, 4) - no batch
     if camera_poses.ndim == 4:
-        camera_poses = camera_poses[0]  # Remove batch dimension if present
+        camera_poses = camera_poses[0]  # Remove batch dimension if present: (B, N, 4, 4) -> (N, 4, 4)
     
     # Reshape points if needed
     if points3d.ndim > 2:
@@ -316,23 +320,25 @@ def pi3_to_colmap_simple(
     # Add rig to reconstruction
     reconstruction.add_rig(rig)
     
-    # Add frames with poses and images
+    # Add frames with poses and create corresponding images
     for frame_idx in range(N):
         camera_id = 1 if shared_camera else frame_idx + 1
         
-        # Create data_id for this image
+        # Create frame
+        frame = pycolmap.Frame(frame_id=frame_idx + 1, rig_id=1)
+        
+        # Create data_id - this links the frame to the camera/image
         data_id = pycolmap.data_t()
         data_id.sensor_id = pycolmap.sensor_t()
         data_id.sensor_id.type = pycolmap.SensorType.CAMERA
         data_id.sensor_id.id = camera_id
-        data_id.id = frame_idx + 1  # image_id
-        
-        # Create frame with data_id
-        frame = pycolmap.Frame(frame_id=frame_idx + 1, rig_id=1)
+        data_id.id = frame_idx + 1  # This must match the image_id we'll create
         frame.add_data_id(data_id)
+        
         reconstruction.add_frame(frame)
         
-        # Set pose on the frame
+        # Set camera pose on the frame
+        # Pi3 outputs camera-to-world, but COLMAP needs world-to-camera (cam_from_world)
         cam_from_world_matrix = np.linalg.inv(camera_poses[frame_idx])
         cam_from_world = pycolmap.Rigid3d(
             pycolmap.Rotation3d(cam_from_world_matrix[:3, :3]),
@@ -340,13 +346,18 @@ def pi3_to_colmap_simple(
         )
         reconstruction.frames[frame_idx + 1].set_cam_from_world(camera_id, cam_from_world)
         
+        # Register the frame to make it active
+        reconstruction.register_frame(frame_idx + 1)
+        
         # Create and add image linked to this frame
-        image = pycolmap.Image({
-            'name': f"image_{frame_idx:04d}.jpg",
-            'camera_id': camera_id,
-            'image_id': frame_idx + 1,
-            'frame_id': frame_idx + 1
-        })
+        # The image_id must match the data_id.id set above
+        image = pycolmap.Image(
+            name=f"image_{frame_idx:04d}.jpg",
+            camera_id=camera_id,
+            image_id=frame_idx + 1  # Must match data_id.id
+        )
+        # Set frame_id to link image to frame
+        image.frame_id = frame_idx + 1
         reconstruction.add_image(image)
     
     return reconstruction
