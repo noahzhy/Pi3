@@ -124,7 +124,7 @@ if __name__ == '__main__':
         )
         
         # Save COLMAP reconstruction
-        save_colmap_reconstruction(reconstruction, args.colmap_path)
+        save_colmap_reconstruction(reconstruction, args.colmap_path, images=imgs)
         print(f"COLMAP reconstruction exported successfully!")
         print(f"  - {len(reconstruction.points3D)} 3D points")
         print(f"  - {len(reconstruction.images)} images")
