@@ -439,18 +439,86 @@ def _build_pycolmap_intri(frame_idx, intrinsics, camera_type, extra_params=None)
     return pycolmap_intri
 
 
-def save_colmap_reconstruction(reconstruction, output_path):
+def _save_images(images, output_path, reconstruction):
+    """
+    Save images to the 'images' folder under output_path.
+    
+    Args:
+        images (torch.Tensor or np.ndarray): Images to save, shape (N, 3, H, W) or (B, N, 3, H, W)
+        output_path (str): Base output directory path
+        reconstruction (pycolmap.Reconstruction): COLMAP reconstruction (used to get image names)
+    """
+    import os
+    try:
+        import cv2
+    except ImportError:
+        print("Warning: opencv-python not installed. Cannot save images.")
+        return
+    
+    # Convert tensors to numpy if needed
+    if torch.is_tensor(images):
+        images = images.detach().cpu().numpy()
+    
+    # Handle batch dimension - images should be (N, 3, H, W) or (B, N, 3, H, W)
+    if images.ndim == 5:
+        images = images[0]  # Remove batch dimension: (B, N, 3, H, W) -> (N, 3, H, W)
+    
+    N = images.shape[0]
+    
+    # Create images folder
+    images_dir = os.path.join(output_path, "images")
+    os.makedirs(images_dir, exist_ok=True)
+    
+    # Save each image
+    for frame_idx in range(N):
+        # Get image data: (3, H, W) -> (H, W, 3)
+        img = images[frame_idx].transpose(1, 2, 0)
+        
+        # Convert from [0, 1] to [0, 255] if needed
+        if img.max() <= 1.0:
+            img = (img * 255).astype(np.uint8)
+        else:
+            img = img.astype(np.uint8)
+        
+        # Convert RGB to BGR for OpenCV
+        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        
+        # Get the image name from the reconstruction
+        # Frame IDs in reconstruction are 1-indexed
+        image_id = frame_idx + 1
+        if image_id in reconstruction.images:
+            image_name = reconstruction.images[image_id].name
+        else:
+            # Fallback to default naming
+            image_name = f"image_{frame_idx:04d}.jpg"
+        
+        # Save the image
+        image_path = os.path.join(images_dir, image_name)
+        cv2.imwrite(image_path, img_bgr)
+    
+    print(f"Saved {N} images to: {images_dir}")
+
+
+def save_colmap_reconstruction(reconstruction, output_path, images=None):
     """
     Save COLMAP reconstruction to disk.
     
     Args:
         reconstruction (pycolmap.Reconstruction): COLMAP reconstruction object
         output_path (str): Output directory path
+        images (torch.Tensor or np.ndarray, optional): Images to save, shape (N, 3, H, W) or (B, N, 3, H, W)
+                                                        with pixel values in range [0, 1]
     """
     if not PYCOLMAP_AVAILABLE:
         raise ImportError("pycolmap is required for COLMAP export. Install it with: pip install pycolmap")
     
     import os
     os.makedirs(output_path, exist_ok=True)
+    
+    # Save the reconstruction data
     reconstruction.write(output_path)
     print(f"COLMAP reconstruction saved to: {output_path}")
+    
+    # Save images if provided
+    if images is not None:
+        _save_images(images, output_path, reconstruction)
