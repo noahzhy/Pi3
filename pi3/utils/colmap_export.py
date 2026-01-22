@@ -1,6 +1,8 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# This implementation is based on VGGT's np_to_pycolmap.py
+# This implementation is inspired by VGGT's np_to_pycolmap.py
 # Reference: https://github.com/facebookresearch/vggt/blob/main/vggt/dependency/np_to_pycolmap.py
+# 
+# Note: This implementation is adapted for pycolmap 3.13+ API
 
 import numpy as np
 import torch
@@ -158,12 +160,13 @@ def pi3_to_colmap(
             cam_from_world_matrix[:3, 3]
         )
         
+        # Create image using the correct API
         image = pycolmap.Image(
-            id=frame_idx + 1,
             name=f"image_{frame_idx:04d}.jpg",
             camera_id=camera.camera_id if shared_camera and frame_idx > 0 else frame_idx + 1,
-            cam_from_world=cam_from_world
+            image_id=frame_idx + 1
         )
+        image.cam_from_world = cam_from_world
         
         # Add 2D points and establish tracks
         points2D_list = []
@@ -187,9 +190,6 @@ def pi3_to_colmap(
         # Set points for image
         if points2D_list:
             image.points2D = pycolmap.ListPoint2D(points2D_list)
-            image.registered = True
-        else:
-            image.registered = False
         
         reconstruction.add_image(image)
     
@@ -208,6 +208,8 @@ def pi3_to_colmap_simple(
     """
     Simplified conversion from Pi3 output to COLMAP format without tracks.
     This is useful for visualization and initialization but should NOT be used for bundle adjustment.
+    
+    Compatible with pycolmap 3.13+ API which uses frames and rigs.
     
     Args:
         points3d (np.ndarray): 3D points, shape (P, 3) where P is number of points
@@ -232,9 +234,9 @@ def pi3_to_colmap_simple(
     if points_rgb is not None and torch.is_tensor(points_rgb):
         points_rgb = points_rgb.detach().cpu().numpy()
     
-    # Handle batch dimension
-    if camera_poses.ndim == 3:
-        camera_poses = camera_poses[0]
+    # Handle batch dimension - camera_poses should be (N, 4, 4) or (B, N, 4, 4)
+    if camera_poses.ndim == 4:
+        camera_poses = camera_poses[0]  # Remove batch dimension if present
     
     # Reshape points if needed
     if points3d.ndim > 2:
@@ -251,9 +253,10 @@ def pi3_to_colmap_simple(
         intrinsics = _estimate_intrinsics(image_size, N, camera_type)
     elif torch.is_tensor(intrinsics):
         intrinsics = intrinsics.detach().cpu().numpy()
-    
-    if intrinsics.ndim == 3:
-        intrinsics = intrinsics[0]
+        if intrinsics.ndim == 4:
+            intrinsics = intrinsics[0]  # Remove batch dimension, keep (N, 3, 3)
+    elif intrinsics.ndim == 4:
+        intrinsics = intrinsics[0]  # Remove batch dimension, keep (N, 3, 3)
     
     # Create reconstruction
     reconstruction = pycolmap.Reconstruction()
@@ -266,10 +269,30 @@ def pi3_to_colmap_simple(
             rgb = (rgb * 255).astype(np.uint8)
         reconstruction.add_point3D(points3d[point_idx], pycolmap.Track(), rgb)
     
-    # Add cameras and images
-    for frame_idx in range(N):
-        # Set camera
-        if frame_idx == 0 or not shared_camera:
+    # Create rig with sensors (required by pycolmap 3.13+)
+    rig = pycolmap.Rig(rig_id=1)
+    
+    # Add cameras and register them with the rig as sensors
+    if shared_camera:
+        # Single camera for all frames
+        pycolmap_intri = _build_pycolmap_intri(0, intrinsics, camera_type)
+        camera = pycolmap.Camera(
+            model=camera_type,
+            width=int(image_size[0]),
+            height=int(image_size[1]),
+            params=pycolmap_intri,
+            camera_id=1
+        )
+        reconstruction.add_camera(camera)
+        
+        # Add camera as reference sensor to rig
+        sensor = pycolmap.sensor_t()
+        sensor.type = pycolmap.SensorType.CAMERA
+        sensor.id = 1
+        rig.add_ref_sensor(sensor)
+    else:
+        # Separate camera for each frame
+        for frame_idx in range(N):
             pycolmap_intri = _build_pycolmap_intri(frame_idx, intrinsics, camera_type)
             camera = pycolmap.Camera(
                 model=camera_type,
@@ -279,24 +302,53 @@ def pi3_to_colmap_simple(
                 camera_id=frame_idx + 1
             )
             reconstruction.add_camera(camera)
+            
+            # Add camera as sensor to rig
+            sensor = pycolmap.sensor_t()
+            sensor.type = pycolmap.SensorType.CAMERA
+            sensor.id = frame_idx + 1
+            
+            if frame_idx == 0:
+                # First camera is the reference sensor
+                rig.add_ref_sensor(sensor)
+            else:
+                # Other cameras are non-reference sensors
+                rig.add_sensor(sensor, pycolmap.Rigid3d())
+    
+    # Add rig to reconstruction
+    reconstruction.add_rig(rig)
+    
+    # Add frames with poses and images
+    for frame_idx in range(N):
+        camera_id = 1 if shared_camera else frame_idx + 1
         
-        # Convert camera_to_world to world_to_camera for COLMAP
+        # Create data_id for this image
+        data_id = pycolmap.data_t()
+        data_id.sensor_id = pycolmap.sensor_t()
+        data_id.sensor_id.type = pycolmap.SensorType.CAMERA
+        data_id.sensor_id.id = camera_id
+        data_id.id = frame_idx + 1  # image_id
+        
+        # Create frame with data_id
+        frame = pycolmap.Frame(frame_id=frame_idx + 1, rig_id=1)
+        frame.add_data_id(data_id)
+        reconstruction.add_frame(frame)
+        
+        # Set pose on the frame
         cam_from_world_matrix = np.linalg.inv(camera_poses[frame_idx])
-        
         cam_from_world = pycolmap.Rigid3d(
             pycolmap.Rotation3d(cam_from_world_matrix[:3, :3]),
             cam_from_world_matrix[:3, 3]
         )
+        reconstruction.frames[frame_idx + 1].set_cam_from_world(camera_id, cam_from_world)
         
-        image = pycolmap.Image(
-            id=frame_idx + 1,
-            name=f"image_{frame_idx:04d}.jpg",
-            camera_id=1 if shared_camera else frame_idx + 1,
-            cam_from_world=cam_from_world
-        )
-        
-        # No 2D points for simple export
-        image.registered = True
+        # Create and add image linked to this frame
+        image = pycolmap.Image({
+            'name': f"image_{frame_idx:04d}.jpg",
+            'camera_id': camera_id,
+            'image_id': frame_idx + 1,
+            'frame_id': frame_idx + 1
+        })
         reconstruction.add_image(image)
     
     return reconstruction
