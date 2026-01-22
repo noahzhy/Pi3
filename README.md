@@ -178,6 +178,62 @@ print("Reconstruction complete!")
 # Access outputs: results['points'], results['camera_poses'] and results['local_points'].
 ```
 
+### Exporting to COLMAP Format
+
+Pi3 can export reconstruction results to COLMAP format for further processing, visualization, or integration with other 3D reconstruction pipelines. The implementation is based on [VGGT's np_to_pycolmap](https://github.com/facebookresearch/vggt/blob/main/vggt/dependency/np_to_pycolmap.py).
+
+**Requirements:**
+```bash
+pip install pycolmap
+```
+
+**Example Usage:**
+
+Run the provided example script that performs inference and exports to COLMAP:
+```bash
+# Run on video
+python example_colmap.py --data_path examples/skating.mp4 --colmap_path output/colmap
+
+# Run on image directory
+python example_colmap.py --data_path examples/room/rgb --colmap_path output/colmap
+
+# With multimodal conditions (intrinsics, poses, depths)
+python example_colmap.py --data_path examples/room/rgb \
+    --conditions_path examples/room/condition.npz \
+    --colmap_path output/colmap
+```
+
+**Programmatic Usage:**
+
+```python
+from pi3.utils.colmap_export import pi3_to_colmap_simple, save_colmap_reconstruction
+import numpy as np
+
+# After running Pi3 inference...
+# res = model(imgs)
+
+# Export to COLMAP
+image_size = np.array([W, H])  # Width, Height
+reconstruction = pi3_to_colmap_simple(
+    points3d=res['points'][0].cpu().numpy(),  # Remove batch dimension
+    camera_poses=res['camera_poses'][0].cpu().numpy(),
+    image_size=image_size,
+    points_rgb=imgs[0].permute(0, 2, 3, 1).cpu().numpy(),  # (N, H, W, 3)
+    camera_type="SIMPLE_PINHOLE"
+)
+
+# Save to disk
+save_colmap_reconstruction(reconstruction, "output/colmap")
+```
+
+The exported reconstruction includes:
+- 3D points with colors
+- Camera poses (converted from camera-to-world to world-to-camera format)
+- Camera intrinsics (estimated or provided)
+- Image references
+
+**Note:** The current implementation exports a simplified reconstruction suitable for visualization and initialization. For bundle adjustment, you may need to establish proper 2D-3D correspondences (tracks).
+
 
 ## 🙏 Acknowledgements
 
