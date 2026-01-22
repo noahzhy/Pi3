@@ -108,9 +108,9 @@ if __name__ == '__main__':
         
         # Convert colors to 0-255 range if needed
         if colors_masked.max() <= 1.0:
-            colors_masked = (colors_masked * 255).cpu().numpy().astype(np.uint8)
+            colors_masked = (colors_masked * 255).numpy().astype(np.uint8)
         else:
-            colors_masked = colors_masked.cpu().numpy().astype(np.uint8)
+            colors_masked = colors_masked.numpy().astype(np.uint8)
         
         # Use simplified COLMAP export
         reconstruction = pi3_to_colmap_simple(

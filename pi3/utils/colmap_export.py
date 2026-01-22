@@ -12,8 +12,6 @@ try:
     PYCOLMAP_AVAILABLE = True
 except ImportError:
     PYCOLMAP_AVAILABLE = False
-    print("Warning: pycolmap is not installed. COLMAP export functionality will not be available.")
-    print("Install it with: pip install pycolmap")
 
 
 def pi3_to_colmap(
